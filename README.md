@@ -199,7 +199,7 @@ Render offers free hosting with automated SSL/HTTPS, making it ideal for Telegra
 3. Configure the service settings:
    - **Name**: `idprint-studio`
    - **Language / Runtime**: `Node`
-   - **Build Command**: `npm install && npm run build`
+   - **Build Command**: `npm install --legacy-peer-deps && npm run build` (or `npm install && npm run build`)
    - **Start Command**: `npm start`
    - **Instance Type**: `Free`
 4. Add **Environment Variables**:
