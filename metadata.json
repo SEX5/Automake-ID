@@ -1,0 +1,6 @@
+{
+  "name": "IDPrint Bot & Studio",
+  "description": "Automated Telegram Bot and web studio to generate ready-to-print DOCX documents for ID photos, badges, and passport sizes with precise print dimensions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
