@@ -36,6 +36,9 @@ When printing ID or passport photos from standard photo viewers or browsers, pri
 - ✂️ **Customizable Cut Lines & Guides**:
   - Select between **Dashed**, **Solid**, or **Hairline** cutting tracks.
   - Adjustable photo spacing gaps (`0` to `12mm`) and page margins.
+- 👔 **Professional Attire Overlays & Filters**:
+  - Apply clean, vector-rendered formal attire overlays (**Business Suit & Silk Tie**, **Formal Tuxedo & Bowtie**, **Smart Casual Polo**) with adjustable collar alignment sliders and shoulder scale.
+  - Built-in portrait enhancement filters: **Studio Clarity**, **Vibrant**, and **Formal B&W**.
 - 👤 **Smart Biometric Framing**:
   - Smart biometric face-centering for standard visa and passport ratios.
   - Custom background backdrops: Plain White, Off-white, Royal Blue, Crimson Red, and Studio Grey.

@@ -1,5 +1,3 @@
-import { ATTIRE_PRESETS } from '../constants/attirePresets';
-
 /**
  * Utility to process, crop, and format images for ID photo sizing
  */
@@ -33,14 +31,11 @@ export interface RenderPhotoOptions {
   offsetY?: number;
   backgroundColor?: string;
   dpi?: number;
-  attireId?: string;
-  attireScale?: number;
-  attireOffsetY?: number;
 }
 
 /**
  * Render a photo onto an HTML canvas with exact target aspect ratio,
- * optional background fill, zoom, offset, and formal attire overlay, returning base64 JPEG
+ * optional background fill, zoom, and offset, returning base64 JPEG
  */
 export async function renderProcessedPhoto(options: RenderPhotoOptions): Promise<string> {
   const {
@@ -52,9 +47,6 @@ export async function renderProcessedPhoto(options: RenderPhotoOptions): Promise
     offsetY = 0,
     backgroundColor = '#FFFFFF',
     dpi = 300,
-    attireId = 'none',
-    attireScale = 1.0,
-    attireOffsetY = 12,
   } = options;
 
   return new Promise((resolve, reject) => {
@@ -103,33 +95,7 @@ export async function renderProcessedPhoto(options: RenderPhotoOptions): Promise
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
 
-      // Check if attire overlay is selected
-      const selectedAttire = ATTIRE_PRESETS.find((a) => a.id === attireId);
-      if (selectedAttire && selectedAttire.svgDataUri) {
-        const attireImg = new Image();
-        attireImg.onload = () => {
-          // Calculate scale and position for the formal attire overlay
-          const finalScale = (selectedAttire.defaultScale || 1.0) * attireScale;
-          const aWidth = canvasWidth * 1.15 * finalScale;
-          const aAspect = 400 / 300;
-          const aHeight = aWidth / aAspect;
-
-          const aX = (canvasWidth - aWidth) / 2;
-          // Position relative to lower neck/shoulders area
-          const extraShiftY = (attireOffsetY !== undefined ? attireOffsetY : selectedAttire.defaultOffsetY) * (canvasHeight / 100);
-          const aY = canvasHeight - aHeight * 0.72 + extraShiftY;
-
-          ctx.drawImage(attireImg, aX, aY, aWidth, aHeight);
-          resolve(canvas.toDataURL('image/jpeg', 0.95));
-        };
-        attireImg.onerror = () => {
-          // If attire overlay fails to load, resolve base photo gracefully
-          resolve(canvas.toDataURL('image/jpeg', 0.95));
-        };
-        attireImg.src = selectedAttire.svgDataUri;
-      } else {
-        resolve(canvas.toDataURL('image/jpeg', 0.95));
-      }
+      resolve(canvas.toDataURL('image/jpeg', 0.95));
     };
 
     img.onerror = () => reject(new Error('Failed to load image for processing'));

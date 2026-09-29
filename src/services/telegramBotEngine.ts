@@ -444,45 +444,13 @@ export async function processBotInput(
     };
   }
 
-  // Handle Paper Selection -> Step 4: Choose Attire
+  // Handle Paper Selection -> Step 3: Waiting for photo
   if (callbackData && callbackData.startsWith('set_paper:')) {
-    const paper = callbackData.replace('set_paper:', '') as PaperSize;
-    const paperName = (PAPER_DIMENSIONS as Record<string, any>)[paper]?.name || 'A4';
-
-    updateSession(chatId, { paperSize: paper, step: 'SELECT_ATTIRE' });
-
-    return {
-      replyText:
-        `👔 **Step 4 of 5: Choose Formal Attire (Optional)**\n\n` +
-        `Do you need formal business attire (Suit & Tie, Crisp White Polo, Navy Blazer, Barong) for your photo, or keep your original clothing?\n\n` +
-        `_Recommended for Passport, PRC, NBI, Civil Service, and Visa applications!_`,
-      inlineKeyboard: [
-        [
-          { text: "👔 Men's Dark Suit & Tie", callbackData: 'set_attire:mens_suit_tie' },
-          { text: '👔 Crisp White Polo', callbackData: 'set_attire:mens_white_polo' },
-        ],
-        [
-          { text: "👗 Women's Navy Blazer", callbackData: 'set_attire:womens_navy_blazer' },
-          { text: '👔 Formal Barong', callbackData: 'set_attire:barong_formal' },
-        ],
-        [
-          { text: '✨ Keep Original Clothing', callbackData: 'set_attire:none' },
-        ],
-        [
-          { text: '« Change Paper', callbackData: `set_size:${session.sizeId}` },
-        ],
-      ],
-      updatedSession: getSession(chatId),
-    };
-  }
-
-  // Handle Attire Selection -> Step 5: Waiting for photo
-  if (callbackData && callbackData.startsWith('set_attire:')) {
-    const attireId = callbackData.replace('set_attire:', '');
-    const paper = PAPER_DIMENSIONS[session.paperSize] || PAPER_DIMENSIONS.a4;
+    const paperKey = callbackData.replace('set_paper:', '') as PaperSize;
+    const paper = PAPER_DIMENSIONS[paperKey] || PAPER_DIMENSIONS.a4;
     const preset = ID_SIZE_PRESETS.find((p) => p.id === session.sizeId) || ID_SIZE_PRESETS[0];
 
-    updateSession(chatId, { attireId, step: 'WAITING_PHOTO' });
+    updateSession(chatId, { paperSize: paperKey, step: 'WAITING_PHOTO' });
 
     let sizeSummary = preset.name;
     if (session.sizeId === 'custom_combo' && session.customComboItems) {
@@ -492,24 +460,12 @@ export async function processBotInput(
         .join(' + ');
     }
 
-    const attireLabel =
-      attireId === 'mens_suit_tie'
-        ? "Men's Dark Suit & Tie 👔"
-        : attireId === 'mens_white_polo'
-        ? 'Crisp White Polo 👔'
-        : attireId === 'womens_navy_blazer'
-        ? "Women's Navy Blazer 👗"
-        : attireId === 'barong_formal'
-        ? 'Formal Barong 👔'
-        : 'Original Clothing ✨';
-
     return {
       replyText:
         `🎯 **Configuration Ready!**\n\n` +
         `• **Layout:** ${sizeSummary}\n` +
         `• **Total Copies:** ${session.quantity} pcs\n` +
         `• **Paper:** ${paper.name}\n` +
-        `• **Attire:** ${attireLabel}\n` +
         `• **Cut Guides:** Dashed cutting border enabled\n\n` +
         `📸 **Now please send or upload your photo!**\n\n` +
         `💡 _Tips: A front-facing headshot with clear lighting and a plain white or neutral background works best._`,
@@ -543,9 +499,6 @@ export async function processBotInput(
       photoZoom: 1,
       photoOffsetX: 0,
       photoOffsetY: 0,
-      attireId: session.attireId || 'none',
-      attireScale: 1.0,
-      attireOffsetY: 12,
       customComboItems: session.customComboItems,
     };
 

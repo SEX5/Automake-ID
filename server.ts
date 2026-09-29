@@ -3,7 +3,6 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
 import { generateIdPrintDocx } from './src/services/docxGenerator';
 import { processBotInput, getSession, updateSession } from './src/services/telegramBotEngine';
 
@@ -419,87 +418,6 @@ async function startServer() {
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
-    }
-  });
-
-  // 6. AI Formal Attire Generator (Gemini Vision Image Editing)
-  app.post('/api/ai/attire', async (req, res) => {
-    try {
-      if (!process.env.GEMINI_API_KEY) {
-        return res.status(400).json({
-          error: 'GEMINI_API_KEY is not configured on the server. Please use vector attire templates or configure API key in Secrets.',
-        });
-      }
-
-      const { imageBase64, attireType = 'men_suit' } = req.body;
-      if (!imageBase64) {
-        return res.status(400).json({ error: 'Image data is required' });
-      }
-
-      const commaIndex = imageBase64.indexOf(',');
-      const cleanBase64 = commaIndex !== -1 ? imageBase64.slice(commaIndex + 1) : imageBase64;
-
-      let attireDescription = 'a tailored charcoal business suit, crisp white collared shirt, and formal necktie';
-      if (attireType === 'white_polo') {
-        attireDescription = 'a crisp clean white collared polo shirt with collar buttons, formal ID photo style';
-      } else if (attireType === 'women_blazer') {
-        attireDescription = 'a tailored navy blue formal blazer suit jacket with a clean white inner blouse';
-      } else if (attireType === 'barong') {
-        attireDescription = 'a formal Philippine Barong Tagalog embroidered formal collared dress shirt';
-      }
-
-      const prompt = `This is a portrait for an official passport/ID photo. Replace only the person's clothing with ${attireDescription}. Perfectly maintain the person's real face, identity, hair, skin tone, and natural expression without distortion. Maintain clean studio lighting and a clean plain white background.`;
-
-      const ai = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-image',
-        contents: {
-          parts: [
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType: 'image/jpeg',
-              },
-            },
-            {
-              text: prompt,
-            },
-          ],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: '1:1',
-            imageSize: '1K',
-          },
-        },
-      });
-
-      let generatedBase64 = null;
-      if (response.candidates?.[0]?.content?.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          if (part.inlineData?.data) {
-            generatedBase64 = `data:${part.inlineData.mimeType || 'image/jpeg'};base64,${part.inlineData.data}`;
-            break;
-          }
-        }
-      }
-
-      if (!generatedBase64) {
-        return res.status(500).json({ error: 'AI did not return an image part. Please try again.' });
-      }
-
-      res.json({ success: true, imageUrl: generatedBase64 });
-    } catch (err: any) {
-      console.error('Error generating AI attire:', err);
-      res.status(500).json({ error: err.message || 'AI Attire generation failed' });
     }
   });
 
