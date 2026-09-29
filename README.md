@@ -181,7 +181,38 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## 🚢 Deployment
 
-### Deploy with Docker
+### 🟣 Deploy on Render (Recommended)
+
+Render offers free hosting with automated SSL/HTTPS, making it ideal for Telegram Webhooks and Web Studio hosting.
+
+#### Option A: Quick Blueprint Setup
+1. Push this repository to your GitHub account.
+2. Log into [Render Dashboard](https://dashboard.render.com/).
+3. Click **New +** → **Blueprint**.
+4. Connect your GitHub repository. Render will automatically detect `render.yaml`.
+5. Under Environment Variables, supply your `TELEGRAM_BOT_TOKEN` and your Render service URL for `APP_URL` (e.g., `https://idprint-studio.onrender.com`).
+6. Click **Apply**.
+
+#### Option B: Manual Web Service Setup
+1. On Render, click **New +** → **Web Service**.
+2. Connect your GitHub repository.
+3. Configure the service settings:
+   - **Name**: `idprint-studio`
+   - **Language / Runtime**: `Node`
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+   - **Instance Type**: `Free`
+4. Add **Environment Variables**:
+   - `NODE_ENV` = `production`
+   - `PORT` = `3000` (or leave default, Render sets `PORT` automatically)
+   - `TELEGRAM_BOT_TOKEN` = `your_bot_token_from_botfather`
+   - `APP_URL` = `https://<your-render-app-name>.onrender.com`
+5. Click **Create Web Service**.
+6. Once deployed, open your Render URL in your browser or message your Telegram Bot directly!
+
+---
+
+### 🐳 Deploy with Docker
 
 ```dockerfile
 FROM node:20-alpine

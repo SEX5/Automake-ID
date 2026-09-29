@@ -36,6 +36,9 @@ export interface PrintSettings {
   photoOffsetX: number;
   photoOffsetY: number;
   customComboItems?: ComboItem[];
+  attireId?: string; // e.g. 'none', 'mens_suit_tie', 'mens_white_polo', 'womens_navy_blazer', 'barong_formal'
+  attireScale?: number; // scale multiplier 0.8 to 1.4
+  attireOffsetY?: number; // % offset of canvas height
 }
 
 export interface TelegramChatSession {
@@ -46,6 +49,7 @@ export interface TelegramChatSession {
     | 'SELECT_QTY'
     | 'CUSTOM_COMBO_BUILD'
     | 'SELECT_PAPER'
+    | 'SELECT_ATTIRE'
     | 'WAITING_PHOTO'
     | 'GENERATING'
     | 'COMPLETED';
@@ -54,6 +58,7 @@ export interface TelegramChatSession {
   customHeightMm?: number;
   quantity: number;
   paperSize: PaperSize;
+  attireId?: string;
   photoUrl?: string;
   photoBase64?: string;
   lastActive: number;

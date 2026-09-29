@@ -24,6 +24,7 @@ import {
   ScanFace,
 } from 'lucide-react';
 import { ID_SIZE_PRESETS, PAPER_DIMENSIONS } from '../constants/presets';
+import { ATTIRE_PRESETS } from '../constants/attirePresets';
 import { SAMPLE_PHOTOS } from '../constants/sampleImages';
 import { PrintSettings, PaperSize, ComboItem } from '../types';
 import { generateIdPrintDocx } from '../services/docxGenerator';
@@ -63,6 +64,8 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
   const [customAddWidth, setCustomAddWidth] = useState(35);
   const [customAddHeight, setCustomAddHeight] = useState(45);
   const [customAddLabel, setCustomAddLabel] = useState('Custom Size');
+  const [isGeneratingAiAttire, setIsGeneratingAiAttire] = useState(false);
+  const [aiAttireType, setAiAttireType] = useState('men_suit');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const initialPreset =
@@ -88,6 +91,9 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
     photoZoom: 1,
     photoOffsetX: 0,
     photoOffsetY: 0,
+    attireId: 'none',
+    attireScale: 1.0,
+    attireOffsetY: 12,
     customComboItems: initialIsCombo ? DEFAULT_COMBO_ITEMS : undefined,
   });
 
@@ -115,7 +121,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
       ? settings.customHeightMm
       : currentPreset.heightMm;
 
-  // Process and crop photo whenever zoom, background or size changes
+  // Process and crop photo whenever zoom, background, size or attire changes
   useEffect(() => {
     let isCancelled = false;
     async function updateRenderedPhoto() {
@@ -128,6 +134,9 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
           offsetX: settings.photoOffsetX,
           offsetY: settings.photoOffsetY,
           backgroundColor: settings.backgroundColor,
+          attireId: settings.attireId || 'none',
+          attireScale: settings.attireScale || 1.0,
+          attireOffsetY: settings.attireOffsetY !== undefined ? settings.attireOffsetY : 12,
           dpi: 300,
         });
         if (!isCancelled) {
@@ -149,7 +158,39 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
     settings.photoOffsetX,
     settings.photoOffsetY,
     settings.backgroundColor,
+    settings.attireId,
+    settings.attireScale,
+    settings.attireOffsetY,
   ]);
+
+  const handleGenerateAiAttire = async (attireChoice?: string) => {
+    const choice = attireChoice || aiAttireType;
+    setIsGeneratingAiAttire(true);
+    if (onNotify) onNotify('✨ Generating AI tailored business attire with Gemini...');
+    try {
+      const res = await fetch('/api/ai/attire', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: selectedPhoto,
+          attireType: choice,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.imageUrl) {
+        setSelectedPhoto(data.imageUrl);
+        setSettings((s) => ({ ...s, attireId: 'none' })); // Reset vector overlay since AI baked in formal clothing
+        if (onNotify) onNotify('✨ AI Formal Attire applied to portrait!');
+      } else {
+        if (onNotify) onNotify(data.error || 'AI Attire generation failed. You can use vector attire overlays below.');
+      }
+    } catch (err: any) {
+      console.error('AI Attire error:', err);
+      if (onNotify) onNotify('AI Attire service error: ' + (err.message || 'unknown'));
+    } finally {
+      setIsGeneratingAiAttire(false);
+    }
+  };
 
   const handleAutoDetectFace = async (photoSrc?: string, targetW?: number, targetH?: number) => {
     const photo = photoSrc || selectedPhoto;
@@ -377,6 +418,9 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
           offsetX: settings.photoOffsetX,
           offsetY: settings.photoOffsetY,
           backgroundColor: settings.backgroundColor,
+          attireId: settings.attireId || 'none',
+          attireScale: settings.attireScale || 1.0,
+          attireOffsetY: settings.attireOffsetY !== undefined ? settings.attireOffsetY : 12,
           dpi: 300,
         });
         const exactKey = `${sz.widthMm}x${sz.heightMm}`;
@@ -443,6 +487,9 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
           offsetX: settings.photoOffsetX,
           offsetY: settings.photoOffsetY,
           backgroundColor: settings.backgroundColor,
+          attireId: settings.attireId || 'none',
+          attireScale: settings.attireScale || 1.0,
+          attireOffsetY: settings.attireOffsetY !== undefined ? settings.attireOffsetY : 12,
           dpi: 300,
         });
         const exactKey = `${sz.widthMm}x${sz.heightMm}`;
@@ -530,6 +577,9 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
             offsetX: settings.photoOffsetX,
             offsetY: settings.photoOffsetY,
             backgroundColor: settings.backgroundColor,
+            attireId: settings.attireId || 'none',
+            attireScale: settings.attireScale || 1.0,
+            attireOffsetY: settings.attireOffsetY !== undefined ? settings.attireOffsetY : 12,
             dpi: 300,
           });
           sizeImageMap[key] = rendered;
@@ -910,6 +960,174 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                 className="w-full accent-blue-500 cursor-pointer"
               />
             </div>
+          </div>
+
+          {/* Proper Attire & Clothing Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <span>👔 Formal Attire & Clothing</span>
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Attach official business wear for passport, visa, and license requirements
+                </p>
+              </div>
+            </div>
+
+            {/* AI Smart Attire Generator Section */}
+            <div className="p-3.5 bg-gradient-to-r from-blue-950/40 via-purple-950/30 to-slate-950 border border-blue-500/25 rounded-xl space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  <span>AI Smart Attire Switcher</span>
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  Gemini Vision
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Intelligently redresses casual clothes into tailored business attire while preserving your face, hair, and expression.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                {[
+                  { id: 'men_suit', label: "👔 Men's Suit & Tie" },
+                  { id: 'white_polo', label: '👔 Crisp White Polo' },
+                  { id: 'women_blazer', label: "👗 Women's Blazer" },
+                  { id: 'barong', label: '👔 Formal Barong' },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setAiAttireType(item.id);
+                      handleGenerateAiAttire(item.id);
+                    }}
+                    disabled={isGeneratingAiAttire}
+                    className="py-1.5 px-2 rounded-lg bg-slate-900/90 hover:bg-purple-900/30 border border-slate-700/80 hover:border-purple-500/50 text-[11px] text-slate-200 transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {isGeneratingAiAttire && (
+                <div className="flex items-center justify-center gap-2 text-xs text-purple-300 py-1 font-medium animate-pulse">
+                  <Sparkles className="w-3.5 h-3.5 animate-spin" />
+                  <span>Redressing photo with Gemini AI...</span>
+                </div>
+              )}
+            </div>
+
+            {/* Vector Attire Presets Grid */}
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-2">
+                Instant Attire Overlays (True Vector Scaling)
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {ATTIRE_PRESETS.map((attire) => {
+                  const isSelected = (settings.attireId || 'none') === attire.id;
+                  return (
+                    <button
+                      key={attire.id}
+                      type="button"
+                      onClick={() =>
+                        setSettings((s) => ({
+                          ...s,
+                          attireId: attire.id,
+                          attireScale: attire.defaultScale,
+                          attireOffsetY: attire.defaultOffsetY,
+                        }))
+                      }
+                      className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? 'border-blue-500 bg-blue-600/15 shadow-sm'
+                          : 'border-slate-800 bg-slate-950 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-1 mb-1">
+                        <span className="text-xs font-semibold text-white truncate block">
+                          {attire.name}
+                        </span>
+                        {isSelected && <Check className="w-3 h-3 text-blue-400 shrink-0" />}
+                      </div>
+                      <span className="text-[10px] text-slate-400 line-clamp-1">
+                        {attire.badge}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Fine-Tuning Sliders for Attire Fit */}
+            {settings.attireId && settings.attireId !== 'none' && (
+              <div className="pt-3 border-t border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-300">
+                    Collar & Shoulder Alignment
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cur = ATTIRE_PRESETS.find((a) => a.id === settings.attireId);
+                      setSettings((s) => ({
+                        ...s,
+                        attireScale: cur?.defaultScale || 1.0,
+                        attireOffsetY: cur?.defaultOffsetY || 12,
+                      }));
+                    }}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer"
+                  >
+                    Reset Fit
+                  </button>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Attire Width (Scale)</span>
+                    <span className="font-mono text-slate-300">
+                      {Math.round((settings.attireScale || 1.0) * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.8"
+                    max="1.3"
+                    step="0.02"
+                    value={settings.attireScale || 1.0}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, attireScale: parseFloat(e.target.value) }))
+                    }
+                    className="w-full accent-blue-500 cursor-pointer"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Collar Height (Vertical Position)</span>
+                    <span className="font-mono text-slate-300">
+                      {settings.attireOffsetY !== undefined ? settings.attireOffsetY : 12}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="28"
+                    step="1"
+                    value={settings.attireOffsetY !== undefined ? settings.attireOffsetY : 12}
+                    onChange={(e) =>
+                      setSettings((s) => ({
+                        ...s,
+                        attireOffsetY: parseInt(e.target.value, 10),
+                      }))
+                    }
+                    className="w-full accent-blue-500 cursor-pointer"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Preset Size Selection */}
