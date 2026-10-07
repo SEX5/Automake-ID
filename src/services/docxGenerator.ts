@@ -47,7 +47,8 @@ export async function resolveImageBytes(input: string | Uint8Array | ArrayBuffer
 
     // It's a base64 data string (with or without 'data:...;base64,' prefix)
     const commaIndex = input.indexOf(',');
-    let base64Data = (commaIndex !== -1 ? input.slice(commaIndex + 1) : input).replace(/[\s\r\n]/g, '');
+    let base64Data = (commaIndex !== -1 ? input.slice(commaIndex + 1) : input).replace(/[\s\r
+]/g, '');
 
     // Cross-environment base64 decode (Node.js)
     if (typeof Buffer !== 'undefined') {
@@ -86,6 +87,8 @@ export interface DocxGenerateOptions {
   settings: PrintSettings;
   imageBytes?: Uint8Array | string;
   imageBytesMap?: Record<string, Uint8Array | string>;
+  /** Cell keys ("<blockIndex>:<cellIndex>") to leave blank — e.g. already-cut cells on a reused paper. */
+  skipCells?: string[];
   imageResolver?: (widthMm: number, heightMm: number) => Promise<Uint8Array | string> | Uint8Array | string;
   badgeDetails?: {
     name?: string;
@@ -210,6 +213,8 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
   const spacingMm = settings.spacingMm || 4;
   const spacingTwips = convertMillimetersToTwip(spacingMm);
 
+  const skipSet = new Set(options.skipCells ?? []);
+
   // Border style for cut guides
   const cutBorderStyle =
     settings.cutLineStyle === 'solid'
@@ -284,7 +289,8 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
     itemWidthMm: number,
     itemHeightMm: number,
     totalCount: number,
-    imageBytesForTable: Uint8Array
+    imageBytesForTable: Uint8Array,
+    blockIdx: number
   ): Table => {
     const itemColWidthTwips = convertMillimetersToTwip(itemWidthMm);
     const itemColHeightTwips = convertMillimetersToTwip(itemHeightMm);
@@ -342,7 +348,19 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
           );
         }
         if (itemIndex < totalCount) {
-          photoRowCells.push(createPhotoCell(itemWidthMm, itemHeightMm, imageBytesForTable));
+          if (skipSet.has(`${blockIdx}:${itemIndex}`)) {
+            // Cut cell on a reused paper — blank filler, no photo, no border
+            photoRowCells.push(
+              new TableCell({
+                width: { size: itemColWidthTwips, type: WidthType.DXA },
+                borders: emptyBorder,
+                margins: { top: 0, bottom: 0, left: 0, right: 0 },
+                children: [new Paragraph({ spacing: { before: 0, after: 0 }, children: [] })],
+              })
+            );
+          } else {
+            photoRowCells.push(createPhotoCell(itemWidthMm, itemHeightMm, imageBytesForTable));
+          }
           itemIndex++;
         } else {
           // Empty filler cell to keep grid columns strictly aligned
@@ -394,12 +412,14 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
 
   if (comboItems && comboItems.length > 0) {
     // Multi-size combo pack: each size gets its own strictly locked fixed table
+    let blockIdx = 0;
     for (let i = 0; i < comboItems.length; i++) {
       const item = comboItems[i];
       if (item.count <= 0) continue;
 
       const itemBytes = await getImageBytesForSize(item.widthMm, item.heightMm);
-      const gridTable = createFixedPhotoGridTable(item.widthMm, item.heightMm, item.count, itemBytes);
+      const gridTable = createFixedPhotoGridTable(item.widthMm, item.heightMm, item.count, itemBytes, blockIdx);
+      blockIdx++;
       docChildren.push(gridTable);
 
       // Spacer between different photo size tables
@@ -415,7 +435,7 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
   } else {
     // Standard single size grid table
     const itemBytes = await getImageBytesForSize(widthMm, heightMm);
-    const gridTable = createFixedPhotoGridTable(widthMm, heightMm, settings.quantity, itemBytes);
+    const gridTable = createFixedPhotoGridTable(widthMm, heightMm, settings.quantity, itemBytes, 0);
     docChildren.push(gridTable);
   }
 

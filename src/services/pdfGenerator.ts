@@ -6,6 +6,8 @@ export interface PdfGenerateOptions {
   settings: PrintSettings;
   imageBytes?: Uint8Array | string;
   imageBytesMap?: Record<string, Uint8Array | string>;
+  /** Cell keys ("<blockIndex>:<cellIndex>") to leave blank — e.g. already-cut cells on a reused paper. */
+  skipCells?: string[];
 }
 
 function resolveDataUri(input: Uint8Array | string): string {
@@ -58,12 +60,15 @@ export async function generateIdPrintPdf(options: PdfGenerateOptions): Promise<U
   const spacingMm = settings.spacingMm;
   const usableWidthMm = paper.widthMm - marginMm * 2;
 
+  const skipSet = new Set(options.skipCells ?? []);
+
   let currentY = marginMm;
 
   const drawPhotoGrid = (
     wMm: number,
     hMm: number,
-    count: number
+    count: number,
+    blockIdx: number
   ) => {
     if (count <= 0) return;
 
@@ -76,6 +81,9 @@ export async function generateIdPrintPdf(options: PdfGenerateOptions): Promise<U
 
       const x = marginMm + col * (wMm + spacingMm);
       const y = currentY + row * (hMm + spacingMm);
+
+      // Cut cell on a reused paper — leave the physical slot blank
+      if (skipSet.has(`${blockIdx}:${i}`)) continue;
 
       if (imgUri) {
         doc.addImage(imgUri, 'JPEG', x, y, wMm, hMm, undefined, 'FAST');
@@ -103,15 +111,17 @@ export async function generateIdPrintPdf(options: PdfGenerateOptions): Promise<U
   };
 
   if (isComboMode && settings.customComboItems && settings.customComboItems.length > 0) {
+    let blockIdx = 0;
     for (const item of settings.customComboItems) {
       if (item.count <= 0) continue;
-      drawPhotoGrid(item.widthMm, item.heightMm, item.count);
+      drawPhotoGrid(item.widthMm, item.heightMm, item.count, blockIdx);
+      blockIdx++;
       currentY += spacingMm * 1.5;
     }
   } else {
     const singleWidthMm = settings.sizeId === 'custom' && settings.customWidthMm ? settings.customWidthMm : preset.widthMm;
     const singleHeightMm = settings.sizeId === 'custom' && settings.customHeightMm ? settings.customHeightMm : preset.heightMm;
-    drawPhotoGrid(singleWidthMm, singleHeightMm, settings.quantity);
+    drawPhotoGrid(singleWidthMm, singleHeightMm, settings.quantity, 0);
   }
 
   const arrayBuffer = doc.output('arraybuffer');

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Download,
   Printer,
@@ -22,10 +22,23 @@ import {
   X,
   FileDown,
   ScanFace,
+  Save,
+  FolderOpen,
 } from 'lucide-react';
 import { ID_SIZE_PRESETS, PAPER_DIMENSIONS } from '../constants/presets';
 import { SAMPLE_PHOTOS } from '../constants/sampleImages';
-import { PrintSettings, PaperSize, ComboItem } from '../types';
+import { PrintSettings, PaperSize, ComboItem, SavedPaper, PaperBlockLayout } from '../types';
+import {
+  isSupabaseConfigured,
+  listPapers,
+  savePaper,
+  updatePaperCuts,
+  renamePaper,
+  deletePaper,
+  cellKey,
+  countFreeCells,
+  totalCells,
+} from '../services/paperInventory';
 import { generateIdPrintDocx } from '../services/docxGenerator';
 import { generateIdPrintPdf } from '../services/pdfGenerator';
 import { autoCropToBiometricId } from '../services/faceDetection';
@@ -64,6 +77,24 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
   const [customAddHeight, setCustomAddHeight] = useState(45);
   const [customAddLabel, setCustomAddLabel] = useState('Custom Size');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- Reusable photo paper inventory (Supabase) ---
+  const [savedPapers, setSavedPapers] = useState<SavedPaper[]>([]);
+  const [papersLoading, setPapersLoading] = useState(false);
+  const [isPapersPanelOpen, setIsPapersPanelOpen] = useState(false);
+  const [editingPaperId, setEditingPaperId] = useState<string | null>(null);
+  const [draftCuts, setDraftCuts] = useState<Set<string>>(new Set());
+  const [reusePaperId, setReusePaperId] = useState<string | null>(null);
+
+  const reusePaper = useMemo(
+    () => savedPapers.find((pp) => pp.id === reusePaperId) || null,
+    [savedPapers, reusePaperId]
+  );
+  const reuseCutSet = useMemo(() => new Set(reusePaper?.cut_cells ?? []), [reusePaper]);
+  const reuseSkipCells = useMemo(
+    () => (reusePaper ? Array.from(reuseCutSet) : undefined),
+    [reusePaper, reuseCutSet]
+  );
 
   const initialPreset =
     ID_SIZE_PRESETS.find((p) => p.id === initialPresetId) || ID_SIZE_PRESETS[0];
@@ -389,6 +420,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         settings: exportSettings,
         imageBytes: processedPhoto,
         imageBytesMap,
+        skipCells: reuseSkipCells,
       });
 
       let fileName = '';
@@ -455,6 +487,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         settings: exportSettings,
         imageBytes: processedPhoto,
         imageBytesMap,
+        skipCells: reuseSkipCells,
       });
 
       let fileName = '';
@@ -475,6 +508,178 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
       if (onNotify) onNotify('PDF export failed: ' + (err.message || 'unknown error'));
     } finally {
       setIsExportingPdf(false);
+    }
+  };
+
+
+  // ---------- Reusable paper inventory ----------
+  const refreshPapers = async () => {
+    if (!isSupabaseConfigured()) return;
+    setPapersLoading(true);
+    try {
+      setSavedPapers(await listPapers());
+    } catch (err: any) {
+      if (onNotify) onNotify('Failed to load saved papers: ' + (err.message || 'unknown error'));
+    } finally {
+      setPapersLoading(false);
+    }
+  };
+
+  const openPapersPanel = () => {
+    setIsPapersPanelOpen(true);
+    setEditingPaperId(null);
+    refreshPapers();
+  };
+
+  const buildCurrentBlocks = (): PaperBlockLayout[] => {
+    if (isComboMode) {
+      return activeComboItems
+        .filter((c) => c.count > 0)
+        .map((combo, bIdx) => {
+          const itemCols = Math.max(
+            1,
+            Math.floor((usableWidthMm + settings.spacingMm) / (combo.widthMm + settings.spacingMm))
+          );
+          return {
+            block_index: bIdx,
+            label: combo.label,
+            width_mm: combo.widthMm,
+            height_mm: combo.heightMm,
+            cols: itemCols,
+            cell_count: combo.count,
+          };
+        });
+    }
+    return [
+      {
+        block_index: 0,
+        label: currentPreset.name,
+        width_mm: widthMm,
+        height_mm: heightMm,
+        cols: singleCols,
+        cell_count: settings.quantity,
+      },
+    ];
+  };
+
+  const handleSavePaper = async () => {
+    if (!isSupabaseConfigured()) {
+      if (onNotify)
+        onNotify('Supabase not connected — set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then run supabase/migrations/001_saved_papers.sql.');
+      return;
+    }
+    const blocks = buildCurrentBlocks();
+    const total = blocks.reduce((sum, b) => sum + b.cell_count, 0);
+    if (total === 0) {
+      if (onNotify) onNotify('Nothing to save — the sheet is empty.');
+      return;
+    }
+    const dateStr = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const name = `${currentPaper.name} · ${isComboMode ? 'Mix' : currentPreset.name} · ${total} cells · ${dateStr}`;
+    try {
+      const paper = await savePaper({
+        name,
+        paperSize: settings.paperSize,
+        sizeId: settings.sizeId,
+        customWidthMm: settings.customWidthMm,
+        customHeightMm: settings.customHeightMm,
+        isCombo: isComboMode,
+        marginMm: settings.marginMm,
+        spacingMm: settings.spacingMm,
+        blocks,
+      });
+      setSavedPapers((prev) => [paper, ...prev]);
+      if (onNotify) onNotify(`Paper saved: ${name}. Mark cut cells in My Papers after printing.`);
+    } catch (err: any) {
+      if (onNotify) onNotify('Save failed: ' + (err.message || 'unknown error'));
+    }
+  };
+
+  const handleReusePaper = (paper: SavedPaper) => {
+    const patch: Partial<PrintSettings> = {
+      paperSize: paper.paper_size as PaperSize,
+      sizeId: paper.is_combo ? 'custom_combo' : paper.size_id,
+      customWidthMm: paper.custom_width_mm ?? undefined,
+      customHeightMm: paper.custom_height_mm ?? undefined,
+      marginMm: paper.margin_mm,
+      spacingMm: paper.spacing_mm,
+    };
+    if (paper.is_combo) {
+      patch.customComboItems = paper.blocks.map((b) => ({
+        id: `reuse-${b.block_index}`,
+        widthMm: b.width_mm,
+        heightMm: b.height_mm,
+        label: b.label,
+        count: b.cell_count,
+      }));
+    } else {
+      patch.customComboItems = undefined;
+      patch.quantity = paper.blocks[0]?.cell_count ?? 1;
+    }
+    setSettings((prev) => ({ ...prev, ...patch }));
+    setReusePaperId(paper.id);
+    setIsPapersPanelOpen(false);
+    const free = countFreeCells(paper);
+    if (onNotify)
+      onNotify(`Reusing "${paper.name}" — ${free} of ${totalCells(paper)} cells free. Cut cells stay blank on export.`);
+  };
+
+  const handleStopReuse = () => {
+    setReusePaperId(null);
+    if (onNotify) onNotify('Stopped reusing saved paper.');
+  };
+
+  const startEditingCuts = (paper: SavedPaper) => {
+    setEditingPaperId(paper.id);
+    setDraftCuts(new Set(paper.cut_cells ?? []));
+  };
+
+  const toggleDraftCut = (key: string) => {
+    setDraftCuts((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const handleSaveCuts = async () => {
+    const paper = savedPapers.find((pp) => pp.id === editingPaperId);
+    if (!paper) return;
+    try {
+      const cuts = Array.from(draftCuts);
+      await updatePaperCuts(paper.id, cuts);
+      setSavedPapers((prev) =>
+        prev.map((pp) => (pp.id === paper.id ? { ...pp, cut_cells: cuts, updated_at: new Date().toISOString() } : pp))
+      );
+      setEditingPaperId(null);
+      if (onNotify) onNotify(`Updated "${paper.name}" — ${cuts.length} cell(s) marked cut.`);
+    } catch (err: any) {
+      if (onNotify) onNotify('Update failed: ' + (err.message || 'unknown error'));
+    }
+  };
+
+  const handleDeletePaper = async (paper: SavedPaper) => {
+    if (!window.confirm(`Delete saved paper "${paper.name}"? This cannot be undone.`)) return;
+    try {
+      await deletePaper(paper.id);
+      setSavedPapers((prev) => prev.filter((pp) => pp.id !== paper.id));
+      if (reusePaperId === paper.id) setReusePaperId(null);
+      if (onNotify) onNotify('Paper deleted.');
+    } catch (err: any) {
+      if (onNotify) onNotify('Delete failed: ' + (err.message || 'unknown error'));
+    }
+  };
+
+  const handleRenamePaper = async (paper: SavedPaper) => {
+    const name = window.prompt('Rename paper:', paper.name);
+    if (!name || !name.trim() || name.trim() === paper.name) return;
+    try {
+      await renamePaper(paper.id, name.trim());
+      setSavedPapers((prev) => prev.map((pp) => (pp.id === paper.id ? { ...pp, name: name.trim() } : pp)));
+      if (onNotify) onNotify('Paper renamed.');
+    } catch (err: any) {
+      if (onNotify) onNotify('Rename failed: ' + (err.message || 'unknown error'));
     }
   };
 
@@ -547,20 +752,27 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
       if (isComboMode) {
         const activeGroups = activeComboItems.filter((c) => c.count > 0);
         itemsHtml = activeGroups
-          .map((group) => {
+          .map((group, gIdx) => {
             const itemCols = Math.max(
               1,
               Math.floor((usableWidthMm + settings.spacingMm) / (group.widthMm + settings.spacingMm))
             );
             const imgSrc = sizeImageMap[`${group.widthMm}x${group.heightMm}`] || processedPhoto;
             const photos = Array.from({ length: group.count })
-              .map(
-                () => `
+              .map((_, idx) => {
+                const isCut = reuseCutSet.has(`${gIdx}:${idx}`);
+                if (isCut) {
+                  return `
+                <div style="width: ${group.widthMm}mm; height: ${group.heightMm}mm; box-sizing: border-box; border: none; position: relative; overflow: hidden; background: #ffffff;">
+                </div>
+              `;
+                }
+                return `
                 <div style="width: ${group.widthMm}mm; height: ${group.heightMm}mm; box-sizing: border-box; border: ${cutLineBorder}; position: relative; overflow: hidden; background: #ffffff;">
                   <img src="${imgSrc}" style="width: 100%; height: 100%; object-fit: cover; display: block;" />
                 </div>
-              `
-              )
+              `;
+              })
               .join('');
 
             return `
@@ -575,13 +787,20 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
       } else {
         const imgSrc = sizeImageMap[`${widthMm}x${heightMm}`] || processedPhoto;
         const photos = Array.from({ length: settings.quantity })
-          .map(
-            () => `
+          .map((_, idx) => {
+            const isCut = reuseCutSet.has(`0:${idx}`);
+            if (isCut) {
+              return `
+            <div style="width: ${widthMm}mm; height: ${heightMm}mm; box-sizing: border-box; border: none; position: relative; overflow: hidden; background: #ffffff;">
+            </div>
+          `;
+            }
+            return `
             <div style="width: ${widthMm}mm; height: ${heightMm}mm; box-sizing: border-box; border: ${cutLineBorder}; position: relative; overflow: hidden; background: #ffffff;">
               <img src="${imgSrc}" style="width: 100%; height: 100%; object-fit: cover; display: block;" />
             </div>
-          `
-          )
+          `;
+          })
           .join('');
 
         itemsHtml = `
@@ -765,8 +984,46 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
             <Download className="w-3.5 h-3.5" />
             <span>{isExporting ? 'Generating DOCX...' : 'Download .docx'}</span>
           </button>
+
+          <button
+            onClick={handleSavePaper}
+            disabled={totalItems === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
+            title="Save this sheet layout to your reusable paper inventory"
+          >
+            <Save className="w-3.5 h-3.5 text-amber-400" />
+            <span>Save Paper</span>
+          </button>
+
+          <button
+            onClick={openPapersPanel}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors cursor-pointer"
+            title="Open your saved photo papers — mark cut cells and reuse leftover sheets"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+            <span>My Papers</span>
+          </button>
         </div>
       </div>
+
+      {reusePaper && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+          <div className="flex items-center gap-2 text-sm">
+            <FolderOpen className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="text-amber-200 font-semibold">Reusing paper: {reusePaper.name}</span>
+            <span className="text-amber-200/70 text-xs">
+              {countFreeCells(reusePaper)} of {totalCells(reusePaper)} cells free — cut cells stay blank on
+              export
+            </span>
+          </div>
+          <button
+            onClick={handleStopReuse}
+            className="px-2.5 py-1 text-[11px] font-semibold text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-colors cursor-pointer"
+          >
+            Stop reusing
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Settings Panel */}
@@ -1501,29 +1758,42 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                                 justifyContent: 'start',
                               }}
                             >
-                              {Array.from({ length: combo.count }).map((_, idx) => (
-                                <div
-                                  key={idx}
-                                  className="relative group transition-all"
-                                  style={{
-                                    width: `${cWidthPx}px`,
-                                    height: `${cHeightPx}px`,
-                                    border: settings.showCutLines
-                                      ? `1px ${settings.cutLineStyle} #94A3B8`
-                                      : 'none',
-                                  }}
-                                >
-                                  <img
-                                    src={processedPhoto}
-                                    alt="ID Item"
-                                    className="w-full h-full object-cover"
-                                    referrerPolicy="no-referrer"
-                                  />
-                                  {settings.showCutLines && (
-                                    <Scissors className="w-2.5 h-2.5 text-slate-400 absolute -top-1.5 -left-1.5 opacity-60" />
-                                  )}
-                                </div>
-                              ))}
+                              {Array.from({ length: combo.count }).map((_, idx) => {
+                                const isCut = reuseCutSet.has(`${cIdx}:${idx}`);
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="relative group transition-all"
+                                    style={{
+                                      width: `${cWidthPx}px`,
+                                      height: `${cHeightPx}px`,
+                                      border: isCut
+                                        ? '1px dashed #CBD5E1'
+                                        : settings.showCutLines
+                                          ? `1px ${settings.cutLineStyle} #94A3B8`
+                                          : 'none',
+                                    }}
+                                  >
+                                    {isCut ? (
+                                      <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                                        <span className="text-[10px] font-bold text-slate-400 tracking-widest">CUT</span>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <img
+                                          src={processedPhoto}
+                                          alt="ID Item"
+                                          className="w-full h-full object-cover"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                        {settings.showCutLines && (
+                                          <Scissors className="w-2.5 h-2.5 text-slate-400 absolute -top-1.5 -left-1.5 opacity-60" />
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         );
@@ -1540,29 +1810,42 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                     justifyContent: 'start',
                   }}
                 >
-                  {Array.from({ length: settings.quantity }).map((_, idx) => (
-                    <div
-                      key={idx}
-                      className="relative transition-all"
-                      style={{
-                        width: `${singleItemWidthPx}px`,
-                        height: `${singleItemHeightPx}px`,
-                        border: settings.showCutLines
-                          ? `1px ${settings.cutLineStyle} #94A3B8`
-                          : 'none',
-                      }}
-                    >
-                      <img
-                        src={processedPhoto}
-                        alt="ID Item"
-                        className="w-full h-full object-cover"
-                        referrerPolicy="no-referrer"
-                      />
-                      {settings.showCutLines && (
-                        <Scissors className="w-2.5 h-2.5 text-slate-400 absolute -top-1.5 -left-1.5 opacity-60" />
-                      )}
-                    </div>
-                  ))}
+                  {Array.from({ length: settings.quantity }).map((_, idx) => {
+                    const isCut = reuseCutSet.has(`0:${idx}`);
+                    return (
+                      <div
+                        key={idx}
+                        className="relative transition-all"
+                        style={{
+                          width: `${singleItemWidthPx}px`,
+                          height: `${singleItemHeightPx}px`,
+                          border: isCut
+                            ? '1px dashed #CBD5E1'
+                            : settings.showCutLines
+                              ? `1px ${settings.cutLineStyle} #94A3B8`
+                              : 'none',
+                        }}
+                      >
+                        {isCut ? (
+                          <div className="w-full h-full flex items-center justify-center bg-slate-100">
+                            <span className="text-[10px] font-bold text-slate-400 tracking-widest">CUT</span>
+                          </div>
+                        ) : (
+                          <>
+                            <img
+                              src={processedPhoto}
+                              alt="ID Item"
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                            {settings.showCutLines && (
+                              <Scissors className="w-2.5 h-2.5 text-slate-400 absolute -top-1.5 -left-1.5 opacity-60" />
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1681,6 +1964,153 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                 </li>
               </ul>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Paper Inventory Modal */}
+      {isPapersPanelOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-700/80 rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative text-slate-100 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-white tracking-tight">Paper Inventory</h3>
+                <p className="text-[11px] text-slate-400">
+                  Save printed sheets, tap the cells you cut out, and reuse the leftover paper.
+                </p>
+              </div>
+              <button
+                onClick={() => setIsPapersPanelOpen(false)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {!isSupabaseConfigured() ? (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+                <p className="font-semibold mb-1">Supabase not connected</p>
+                <p className="text-xs text-amber-200/80">
+                  Set <code className="font-mono">VITE_SUPABASE_URL</code> and{' '}
+                  <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> in your environment, then run{' '}
+                  <code className="font-mono">supabase/migrations/001_saved_papers.sql</code> in the Supabase
+                  SQL editor.
+                </p>
+              </div>
+            ) : papersLoading ? (
+              <div className="py-10 text-center text-sm text-slate-400">Loading saved papers…</div>
+            ) : savedPapers.length === 0 ? (
+              <div className="py-10 text-center">
+                <FolderOpen className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-300">No saved papers yet</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Lay out a sheet in the studio, then click “Save Paper”.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {savedPapers.map((paper) => {
+                  const free = countFreeCells(paper);
+                  const total = totalCells(paper);
+                  const isEditing = editingPaperId === paper.id;
+                  const isReusing = reusePaperId === paper.id;
+                  return (
+                    <div
+                      key={paper.id}
+                      className={`rounded-xl border p-4 ${isReusing ? 'border-amber-500/50 bg-amber-500/5' : 'border-slate-700/60 bg-slate-800/40'}`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="font-semibold text-white text-sm flex items-center gap-2">
+                            {paper.name}
+                            {isReusing && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                IN USE
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5">
+                            {free} of {total} cells free · {paper.blocks.length} block{paper.blocks.length === 1 ? '' : 's'}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            onClick={() => handleReusePaper(paper)}
+                            disabled={free === 0}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors disabled:opacity-40 cursor-pointer"
+                            title={free === 0 ? 'No free cells left on this paper' : 'Load this paper and print only the free cells'}
+                          >
+                            Reuse
+                          </button>
+                          <button
+                            onClick={() => (isEditing ? setEditingPaperId(null) : startEditingCuts(paper))}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-slate-200 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors cursor-pointer"
+                          >
+                            {isEditing ? 'Cancel' : 'Mark cuts'}
+                          </button>
+                          <button
+                            onClick={() => handleRenamePaper(paper)}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => handleDeletePaper(paper)}
+                            className="p-1.5 text-slate-500 hover:text-red-400 transition-colors cursor-pointer"
+                            title="Delete paper"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {isEditing && (
+                        <div className="mt-3 space-y-3 border-t border-slate-700/60 pt-3">
+                          <p className="text-[11px] text-slate-400">
+                            Tap the cells you already cut out of the physical sheet. Tap again to undo.
+                          </p>
+                          {paper.blocks.map((b) => (
+                            <div key={b.block_index}>
+                              <div className="text-[11px] font-semibold text-slate-400 mb-1.5">{b.label}</div>
+                              <div
+                                className="grid gap-1"
+                                style={{ gridTemplateColumns: `repeat(${b.cols}, minmax(0, 1fr))` }}
+                              >
+                                {Array.from({ length: b.cell_count }).map((_, ci) => {
+                                  const key = cellKey(b.block_index, ci);
+                                  const cut = draftCuts.has(key);
+                                  return (
+                                    <button
+                                      key={key}
+                                      onClick={() => toggleDraftCut(key)}
+                                      className={`aspect-square rounded-md border text-[10px] font-bold transition-colors cursor-pointer flex items-center justify-center ${
+                                        cut
+                                          ? 'bg-red-500/20 border-red-500/60 text-red-300'
+                                          : 'bg-slate-700/40 border-slate-600 text-slate-400 hover:border-slate-400'
+                                      }`}
+                                      title={cut ? 'Cut — click to restore' : 'Click to mark as cut'}
+                                    >
+                                      {cut ? <X className="w-3 h-3" /> : ci + 1}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                          <button
+                            onClick={handleSaveCuts}
+                            className="px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors cursor-pointer"
+                          >
+                            Save cuts
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

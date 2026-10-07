@@ -74,3 +74,32 @@ export interface TelegramMessageItem {
     base64?: string;
   };
 }
+
+/** One contiguous block of same-size photos on a saved paper sheet. */
+export interface PaperBlockLayout {
+  block_index: number;
+  label: string;
+  width_mm: number;
+  height_mm: number;
+  cols: number;
+  cell_count: number;
+}
+
+/** A physical sheet of photo paper saved for reuse (Supabase `saved_papers`). */
+export interface SavedPaper {
+  id: string;
+  owner_id: string;
+  name: string;
+  paper_size: string;
+  size_id: string;
+  custom_width_mm?: number | null;
+  custom_height_mm?: number | null;
+  is_combo: boolean;
+  margin_mm: number;
+  spacing_mm: number;
+  blocks: PaperBlockLayout[];
+  /** Cell keys ("<block>:<cell>") that were cut out and are no longer printable. */
+  cut_cells: string[];
+  created_at: string;
+  updated_at: string;
+}
