@@ -47,8 +47,7 @@ export async function resolveImageBytes(input: string | Uint8Array | ArrayBuffer
 
     // It's a base64 data string (with or without 'data:...;base64,' prefix)
     const commaIndex = input.indexOf(',');
-    let base64Data = (commaIndex !== -1 ? input.slice(commaIndex + 1) : input).replace(/[\s\r
-]/g, '');
+    let base64Data = (commaIndex !== -1 ? input.slice(commaIndex + 1) : input).replace(/[\s\r\n]/g, '');
 
     // Cross-environment base64 decode (Node.js)
     if (typeof Buffer !== 'undefined') {
