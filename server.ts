@@ -363,7 +363,7 @@ async function startServer() {
   // 4. Generate DOCX Directly (Used by Web Studio & Simulator)
   app.post('/api/generate-docx', async (req, res) => {
     try {
-      const { settings, imageBase64 } = req.body;
+      const { settings, imageBase64, skipCells } = req.body;
       if (!imageBase64) {
         return res.status(400).json({ error: 'Image data is required' });
       }
@@ -371,6 +371,7 @@ async function startServer() {
       const docxBytes = await generateIdPrintDocx({
         settings,
         imageBytes: imageBase64,
+        skipCells,
       });
 
       res.setHeader(

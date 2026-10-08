@@ -8,6 +8,8 @@ export interface PdfGenerateOptions {
   imageBytesMap?: Record<string, Uint8Array | string>;
   /** Cell keys ("<blockIndex>:<cellIndex>") to leave blank — e.g. already-cut cells on a reused paper. */
   skipCells?: string[];
+  /** Specific cell keys that contain the active photo to print. */
+  activeCells?: string[];
 }
 
 function resolveDataUri(input: Uint8Array | string): string {
@@ -64,6 +66,11 @@ export async function generateIdPrintPdf(options: PdfGenerateOptions): Promise<U
 
   let currentY = marginMm;
 
+  const activeSet =
+    options.activeCells && options.activeCells.length > 0
+      ? new Set(options.activeCells)
+      : null;
+
   const drawPhotoGrid = (
     wMm: number,
     hMm: number,
@@ -74,6 +81,11 @@ export async function generateIdPrintPdf(options: PdfGenerateOptions): Promise<U
 
     const cols = Math.max(1, Math.floor((usableWidthMm + spacingMm) / (wMm + spacingMm)));
     const imgUri = getImageForSize(wMm, hMm);
+    const imgFormat = imgUri.startsWith('data:image/png')
+      ? 'PNG'
+      : imgUri.startsWith('data:image/webp')
+      ? 'WEBP'
+      : 'JPEG';
 
     for (let i = 0; i < count; i++) {
       const col = i % cols;
@@ -82,11 +94,13 @@ export async function generateIdPrintPdf(options: PdfGenerateOptions): Promise<U
       const x = marginMm + col * (wMm + spacingMm);
       const y = currentY + row * (hMm + spacingMm);
 
-      // Cut cell on a reused paper — leave the physical slot blank
-      if (skipSet.has(`${blockIdx}:${i}`)) continue;
+      const cellKey = `${blockIdx}:${i}`;
+      // Cut cell or slot not selected for active photo printing — leave blank
+      if (skipSet.has(cellKey)) continue;
+      if (activeSet && !activeSet.has(cellKey)) continue;
 
       if (imgUri) {
-        doc.addImage(imgUri, 'JPEG', x, y, wMm, hMm, undefined, 'FAST');
+        doc.addImage(imgUri, imgFormat, x, y, wMm, hMm, undefined, 'FAST');
       }
 
       // Draw cut lines if enabled
@@ -114,14 +128,48 @@ export async function generateIdPrintPdf(options: PdfGenerateOptions): Promise<U
     let blockIdx = 0;
     for (const item of settings.customComboItems) {
       if (item.count <= 0) continue;
-      drawPhotoGrid(item.widthMm, item.heightMm, item.count, blockIdx);
+      let blockCount = item.count;
+      if (options.activeCells && options.activeCells.length > 0) {
+        for (const k of options.activeCells) {
+          const [b, c] = k.split(':').map(Number);
+          if (b === blockIdx && !isNaN(c)) {
+            blockCount = Math.max(blockCount, c + 1);
+          }
+        }
+      }
+      if (options.skipCells && options.skipCells.length > 0) {
+        for (const k of options.skipCells) {
+          const [b, c] = k.split(':').map(Number);
+          if (b === blockIdx && !isNaN(c)) {
+            blockCount = Math.max(blockCount, c + 1);
+          }
+        }
+      }
+      drawPhotoGrid(item.widthMm, item.heightMm, blockCount, blockIdx);
       blockIdx++;
       currentY += spacingMm * 1.5;
     }
   } else {
     const singleWidthMm = settings.sizeId === 'custom' && settings.customWidthMm ? settings.customWidthMm : preset.widthMm;
     const singleHeightMm = settings.sizeId === 'custom' && settings.customHeightMm ? settings.customHeightMm : preset.heightMm;
-    drawPhotoGrid(singleWidthMm, singleHeightMm, settings.quantity, 0);
+    let singleCount = settings.quantity;
+    if (options.activeCells && options.activeCells.length > 0) {
+      for (const k of options.activeCells) {
+        const [b, c] = k.split(':').map(Number);
+        if (b === 0 && !isNaN(c)) {
+          singleCount = Math.max(singleCount, c + 1);
+        }
+      }
+    }
+    if (options.skipCells && options.skipCells.length > 0) {
+      for (const k of options.skipCells) {
+        const [b, c] = k.split(':').map(Number);
+        if (b === 0 && !isNaN(c)) {
+          singleCount = Math.max(singleCount, c + 1);
+        }
+      }
+    }
+    drawPhotoGrid(singleWidthMm, singleHeightMm, singleCount, 0);
   }
 
   const arrayBuffer = doc.output('arraybuffer');

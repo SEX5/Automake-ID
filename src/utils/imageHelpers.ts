@@ -104,9 +104,25 @@ export async function renderProcessedPhoto(options: RenderPhotoOptions): Promise
 }
 
 /**
+ * Resolves the appropriate MIME type from filename or explicit argument
+ */
+function resolveMimeType(fileName: string, explicitMime?: string): string {
+  if (explicitMime) return explicitMime;
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  return 'application/octet-stream';
+}
+
+/**
  * Triggers a download of a Uint8Array or Blob or URL as a file in the browser
  */
 export function triggerFileDownload(data: Uint8Array | Blob | string, fileName: string, mimeType?: string) {
+  const resolvedMime = resolveMimeType(fileName, mimeType);
+
   if (typeof data === 'string') {
     if (data.startsWith('data:') || data.startsWith('blob:') || data.startsWith('http://') || data.startsWith('https://')) {
       const a = document.createElement('a');
@@ -118,7 +134,7 @@ export function triggerFileDownload(data: Uint8Array | Blob | string, fileName: 
       return;
     } else {
       // Raw base64 string
-      const fullDataUri = `data:${mimeType || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'};base64,${data}`;
+      const fullDataUri = `data:${resolvedMime};base64,${data}`;
       const a = document.createElement('a');
       a.href = fullDataUri;
       a.download = fileName;
@@ -131,10 +147,11 @@ export function triggerFileDownload(data: Uint8Array | Blob | string, fileName: 
 
   let blob: Blob;
   if (data instanceof Blob) {
-    blob = data;
+    blob = data.type ? data : new Blob([data], { type: resolvedMime });
   } else if (data instanceof Uint8Array) {
-    blob = new Blob([data.buffer as ArrayBuffer], {
-      type: mimeType || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    // Pass the typed array slice directly to ensure clean buffer boundaries and valid MIME type
+    blob = new Blob([data as unknown as BlobPart], {
+      type: resolvedMime,
     });
   } else {
     throw new Error('Unsupported download format');
@@ -147,5 +164,5 @@ export function triggerFileDownload(data: Uint8Array | Blob | string, fileName: 
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

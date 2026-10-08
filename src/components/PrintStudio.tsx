@@ -37,6 +37,7 @@ import {
   deletePaper,
   cellKey,
   totalCells,
+  countFreeCells,
 } from '../services/paperInventory';
 import { generateIdPrintDocx } from '../services/docxGenerator';
 import { generateIdPrintPdf } from '../services/pdfGenerator';
@@ -77,7 +78,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
   const [customAddLabel, setCustomAddLabel] = useState('Custom Size');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // --- Reusable photo paper inventory (Supabase) ---
+  // --- Reusable photo paper inventory & sheet cuts ---
   const [savedPapers, setSavedPapers] = useState<SavedPaper[]>([]);
   const [papersLoading, setPapersLoading] = useState(false);
   const [isPapersPanelOpen, setIsPapersPanelOpen] = useState(false);
@@ -85,26 +86,27 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
   const [draftCuts, setDraftCuts] = useState<Set<string>>(new Set());
   const [reusePaperId, setReusePaperId] = useState<string | null>(null);
 
+  // Active cut-out holes on the current paper sheet (slots that were already printed/cut and must stay BLANK)
+  const [sheetCuts, setSheetCuts] = useState<Set<string>>(new Set());
+
   const reusePaper = useMemo(
     () => savedPapers.find((pp) => pp.id === reusePaperId) || null,
     [savedPapers, reusePaperId]
   );
-  // Cut cells are the slots to fill: on reuse, the current photo prints into
-  // every marked (cut) cell, while uncut cells keep their existing photos and
-  // stay blank on export.
-  const reuseCutSet = useMemo(() => new Set(reusePaper?.cut_cells ?? []), [reusePaper]);
-  const reuseSkipCells = useMemo(() => {
-    if (!reusePaper) return undefined;
-    const skip: string[] = [];
-    for (const b of reusePaper.blocks ?? []) {
-      for (let i = 0; i < (b.cell_count || 0); i++) {
-        const key = cellKey(b.block_index, i);
-        if (!reuseCutSet.has(key)) skip.push(key);
-      }
+
+  // Keep sheetCuts in sync when a saved paper is loaded
+  useEffect(() => {
+    if (reusePaper) {
+      setSheetCuts(new Set(reusePaper.cut_cells ?? []));
     }
-    return skip;
-  }, [reusePaper, reuseCutSet]);
-  const reuseFillCount = reuseCutSet.size;
+  }, [reusePaperId, reusePaper]);
+
+  // Load saved papers on initial mount from localStorage
+  useEffect(() => {
+    listPapers()
+      .then((papers) => setSavedPapers(papers))
+      .catch((err) => console.warn('Could not load papers:', err));
+  }, []);
 
   const initialPreset =
     ID_SIZE_PRESETS.find((p) => p.id === initialPresetId) || ID_SIZE_PRESETS[0];
@@ -155,6 +157,72 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
     settings.sizeId === 'custom' && settings.customHeightMm
       ? settings.customHeightMm
       : currentPreset.heightMm;
+
+  // Physical sheet dimensions and printable capacity
+  const usableWidthMm = currentPaper.widthMm - settings.marginMm * 2;
+  const usableHeightMm = currentPaper.heightMm - settings.marginMm * 2;
+  const singleCols = Math.max(1, Math.floor((usableWidthMm + settings.spacingMm) / (widthMm + settings.spacingMm)));
+  const singleRows = Math.max(1, Math.floor((usableHeightMm + settings.spacingMm) / (heightMm + settings.spacingMm)));
+  const fullSheetCapacity = singleCols * singleRows;
+
+  // Total possible physical spots on this sheet
+  const totalSheetSlotsCount = isComboMode
+    ? activeComboItems.reduce((sum, item) => sum + item.count, 0)
+    : fullSheetCapacity;
+
+  // All available blank spaces on the physical paper in sequential order (excluding cut slots)
+  const availableFreeCells = useMemo(() => {
+    const free: string[] = [];
+    if (isComboMode) {
+      activeComboItems.forEach((group, gIdx) => {
+        for (let i = 0; i < group.count; i++) {
+          const key = cellKey(gIdx, i);
+          if (!sheetCuts.has(key)) free.push(key);
+        }
+      });
+    } else {
+      for (let i = 0; i < fullSheetCapacity; i++) {
+        const key = cellKey(0, i);
+        if (!sheetCuts.has(key)) free.push(key);
+      }
+    }
+    return free;
+  }, [isComboMode, activeComboItems, fullSheetCapacity, sheetCuts]);
+
+  // The specific blank slots that will receive the new photo right now based on quantity
+  const activePrintCells = useMemo(() => {
+    if (isComboMode) {
+      const active = new Set<string>();
+      activeComboItems.forEach((group, gIdx) => {
+        for (let i = 0; i < group.count; i++) {
+          const key = cellKey(gIdx, i);
+          if (!sheetCuts.has(key)) active.add(key);
+        }
+      });
+      return active;
+    }
+    const countToFill = Math.min(settings.quantity, availableFreeCells.length);
+    return new Set(availableFreeCells.slice(0, countToFill));
+  }, [isComboMode, activeComboItems, settings.quantity, availableFreeCells, sheetCuts]);
+
+  // For export (DOCX/PDF/Print): Any cell that is NOT in activePrintCells must stay 100% blank!
+  const reuseSkipCells = useMemo(() => {
+    const skip: string[] = [];
+    if (isComboMode) {
+      activeComboItems.forEach((group, gIdx) => {
+        for (let i = 0; i < group.count; i++) {
+          const key = cellKey(gIdx, i);
+          if (!activePrintCells.has(key)) skip.push(key);
+        }
+      });
+    } else {
+      for (let i = 0; i < fullSheetCapacity; i++) {
+        const key = cellKey(0, i);
+        if (!activePrintCells.has(key)) skip.push(key);
+      }
+    }
+    return skip;
+  }, [isComboMode, activeComboItems, fullSheetCapacity, activePrintCells]);
 
   // Process and crop photo whenever zoom, background, or size changes
   useEffect(() => {
@@ -431,6 +499,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         imageBytes: processedPhoto,
         imageBytesMap,
         skipCells: reuseSkipCells,
+        activeCells: Array.from(activePrintCells),
       });
 
       let fileName = '';
@@ -444,7 +513,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         fileName = `ID_Print_${settings.sizeId}_${settings.quantity}pcs_${settings.paperSize.toUpperCase()}.docx`;
       }
 
-      triggerFileDownload(docxBytes, fileName);
+      triggerFileDownload(docxBytes, fileName, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       if (onNotify) onNotify(`Downloaded ${fileName}`);
     } catch (err: any) {
       console.error('DOCX export error:', err);
@@ -498,6 +567,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         imageBytes: processedPhoto,
         imageBytesMap,
         skipCells: reuseSkipCells,
+        activeCells: Array.from(activePrintCells),
       });
 
       let fileName = '';
@@ -511,7 +581,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         fileName = `ID_Print_${settings.sizeId}_${settings.quantity}pcs_${settings.paperSize.toUpperCase()}.pdf`;
       }
 
-      triggerFileDownload(pdfBytes, fileName);
+      triggerFileDownload(pdfBytes, fileName, 'application/pdf');
       if (onNotify) onNotify(`Downloaded ${fileName} — Ready to print at 100% scale`);
     } catch (err: any) {
       console.error('PDF export error:', err);
@@ -524,7 +594,6 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
 
   // ---------- Reusable paper inventory ----------
   const refreshPapers = async () => {
-    if (!isSupabaseConfigured()) return;
     setPapersLoading(true);
     try {
       setSavedPapers(await listPapers());
@@ -567,25 +636,23 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         width_mm: widthMm,
         height_mm: heightMm,
         cols: singleCols,
-        cell_count: settings.quantity,
+        cell_count: fullSheetCapacity,
       },
     ];
   };
 
   const handleSavePaper = async () => {
-    if (!isSupabaseConfigured()) {
-      if (onNotify)
-        onNotify('Supabase not connected — set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then run supabase/migrations/001_saved_papers.sql.');
-      return;
-    }
     const blocks = buildCurrentBlocks();
     const total = blocks.reduce((sum, b) => sum + b.cell_count, 0);
     if (total === 0) {
       if (onNotify) onNotify('Nothing to save — the sheet is empty.');
       return;
     }
+
+    const currentCutArr = Array.from(sheetCuts);
+    const freeCount = Math.max(0, total - currentCutArr.length);
     const dateStr = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    const name = `${currentPaper.name} · ${isComboMode ? 'Mix' : currentPreset.name} · ${total} cells · ${dateStr}`;
+    const name = `${currentPaper.name} · ${isComboMode ? 'Mix' : currentPreset.name} · ${freeCount} free spots · ${dateStr}`;
     try {
       const paper = await savePaper({
         name,
@@ -597,9 +664,12 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         marginMm: settings.marginMm,
         spacingMm: settings.spacingMm,
         blocks,
+        cutCells: currentCutArr,
       });
-      setSavedPapers((prev) => [paper, ...prev]);
-      if (onNotify) onNotify(`Paper saved: ${name}. Mark cut cells in My Papers after printing.`);
+      setSavedPapers((prev) => [paper, ...prev.filter((p) => p.id !== paper.id)]);
+      setReusePaperId(paper.id);
+      if (onNotify)
+        onNotify(`Paper saved with ${total} total spots! ${currentCutArr.length} slot(s) cut out, ${freeCount} blank spaces left for new photos.`);
     } catch (err: any) {
       if (onNotify) onNotify('Save failed: ' + (err.message || 'unknown error'));
     }
@@ -614,6 +684,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
       marginMm: paper.margin_mm,
       spacingMm: paper.spacing_mm,
     };
+    const free = countFreeCells(paper);
     if (paper.is_combo) {
       patch.customComboItems = paper.blocks.map((b) => ({
         id: `reuse-${b.block_index}`,
@@ -624,14 +695,71 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
       }));
     } else {
       patch.customComboItems = undefined;
-      patch.quantity = paper.blocks[0]?.cell_count ?? 1;
+      patch.quantity = Math.min(settings.quantity || 4, Math.max(1, free));
     }
     setSettings((prev) => ({ ...prev, ...patch }));
     setReusePaperId(paper.id);
+    setSheetCuts(new Set(paper.cut_cells ?? []));
     setIsPapersPanelOpen(false);
-    const fillCount = (paper.cut_cells ?? []).length;
     if (onNotify)
-      onNotify(`Reusing "${paper.name}" — ${fillCount} cut slot(s) will print with the current photo.`);
+      onNotify(`Reusing "${paper.name}" — ${free} empty spots available. New photos will print into the empty areas!`);
+  };
+
+  const handleMarkCurrentAsCut = async () => {
+    if (activePrintCells.size === 0) {
+      if (onNotify) onNotify('No active photos to mark as cut.');
+      return;
+    }
+    const mergedCuts = new Set([...Array.from(sheetCuts), ...Array.from(activePrintCells)]);
+    setSheetCuts(mergedCuts);
+
+    if (reusePaper) {
+      try {
+        const cutArr = Array.from(mergedCuts);
+        await updatePaperCuts(reusePaper.id, cutArr);
+        setSavedPapers((prev) =>
+          prev.map((pp) => (pp.id === reusePaper.id ? { ...pp, cut_cells: cutArr, updated_at: new Date().toISOString() } : pp))
+        );
+      } catch (err: any) {
+        console.warn('Update saved paper error:', err);
+      }
+    }
+
+    if (onNotify)
+      onNotify(`✂️ Marked ${activePrintCells.size} slot(s) as printed/cut! Your new photos will now automatically fill the next available empty areas on this paper.`);
+  };
+
+  const toggleSlotState = async (key: string) => {
+    const nextCuts = new Set(sheetCuts);
+    const wasCut = nextCuts.has(key);
+    if (wasCut) {
+      nextCuts.delete(key);
+    } else {
+      nextCuts.add(key);
+    }
+    setSheetCuts(nextCuts);
+
+    if (reusePaper) {
+      try {
+        const cutArr = Array.from(nextCuts);
+        await updatePaperCuts(reusePaper.id, cutArr);
+        setSavedPapers((prev) =>
+          prev.map((pp) => (pp.id === reusePaper.id ? { ...pp, cut_cells: cutArr, updated_at: new Date().toISOString() } : pp))
+        );
+      } catch (err: any) {
+        console.warn('Update cuts error:', err);
+      }
+    }
+
+    if (onNotify) {
+      onNotify(wasCut ? 'Slot restored to available space.' : 'Slot marked as cut (will stay blank on print).');
+    }
+  };
+
+  const handleResetPaper = () => {
+    setSheetCuts(new Set());
+    setReusePaperId(null);
+    if (onNotify) onNotify('Started a fresh paper sheet! All slots are empty & available.');
   };
 
   const handleStopReuse = () => {
@@ -770,7 +898,8 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
             const imgSrc = sizeImageMap[`${group.widthMm}x${group.heightMm}`] || processedPhoto;
             const photos = Array.from({ length: group.count })
               .map((_, idx) => {
-                const fillsPhoto = !reusePaper || reuseCutSet.has(`${gIdx}:${idx}`);
+                const key = `${gIdx}:${idx}`;
+                const fillsPhoto = activePrintCells.has(key);
                 if (!fillsPhoto) {
                   return `
                 <div style="width: ${group.widthMm}mm; height: ${group.heightMm}mm; box-sizing: border-box; border: none; position: relative; overflow: hidden; background: #ffffff;">
@@ -796,9 +925,16 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
           .join('');
       } else {
         const imgSrc = sizeImageMap[`${widthMm}x${heightMm}`] || processedPhoto;
-        const photos = Array.from({ length: settings.quantity })
+        const maxActiveIdx = Array.from(activePrintCells).reduce((max, k) => {
+          const idx = parseInt(k.split(':')[1] || '0', 10);
+          return Math.max(max, idx);
+        }, 0);
+        const totalPrintSlots = Math.max(settings.quantity, maxActiveIdx + 1);
+
+        const photos = Array.from({ length: totalPrintSlots })
           .map((_, idx) => {
-            const fillsPhoto = !reusePaper || reuseCutSet.has(`0:${idx}`);
+            const key = `0:${idx}`;
+            const fillsPhoto = activePrintCells.has(key);
             if (!fillsPhoto) {
               return `
             <div style="width: ${widthMm}mm; height: ${heightMm}mm; box-sizing: border-box; border: none; position: relative; overflow: hidden; background: #ffffff;">
@@ -902,11 +1038,6 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
       window.print();
     }
   };
-
-  // Sheet dimensions & printable area
-  const usableWidthMm = currentPaper.widthMm - settings.marginMm * 2;
-  const usableHeightMm = currentPaper.heightMm - settings.marginMm * 2;
-  const singleCols = Math.max(1, Math.floor((usableWidthMm + settings.spacingMm) / (widthMm + settings.spacingMm)));
 
   // Proportional physical scale for sheet preview matching real paper aspect ratio
   const PREVIEW_SHEET_WIDTH_PX = 620;
@@ -1016,23 +1147,85 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
         </div>
       </div>
 
-      {reusePaper && (
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
-          <div className="flex items-center gap-2 text-sm">
-            <FolderOpen className="w-4 h-4 text-amber-400 shrink-0" />
-            <span className="text-amber-200 font-semibold">Reusing paper: {reusePaper.name}</span>
-            <span className="text-amber-200/70 text-xs">
-              {reuseFillCount} of {totalCells(reusePaper)} cut slots print with the current photo on export
-            </span>
+      {/* Interactive Paper Sheet & Reuse Status Banner */}
+      <div className="mb-6 p-4 rounded-xl bg-slate-900 border border-slate-800 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0 mt-0.5">
+            <Layers className="w-5 h-5 text-blue-400" />
           </div>
-          <button
-            onClick={handleStopReuse}
-            className="px-2.5 py-1 text-[11px] font-semibold text-amber-200 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-colors cursor-pointer"
-          >
-            Stop reusing
-          </button>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-bold text-white">
+                {reusePaper ? `Reusing: ${reusePaper.name}` : `Physical Sheet: ${currentPaper.name}`}
+              </span>
+              {reusePaper ? (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  SAVED SHEET ACTIVE
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
+                  {currentPaper.widthMm} × {currentPaper.heightMm} mm
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3 text-xs mt-1 text-slate-300 flex-wrap">
+              <span className="flex items-center gap-1 text-emerald-400 font-semibold">
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                {activePrintCells.size} Printing Now
+              </span>
+              <span className="flex items-center gap-1 text-amber-400 font-semibold">
+                <Scissors className="w-3 h-3 text-amber-400" />
+                {sheetCuts.size} Cut Out / Holes
+              </span>
+              <span className="flex items-center gap-1 text-slate-400">
+                <span className="w-2 h-2 rounded-full bg-slate-600" />
+                {Math.max(0, availableFreeCells.length - activePrintCells.size)} Empty Spots Left
+              </span>
+            </div>
+          </div>
         </div>
-      )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={handleMarkCurrentAsCut}
+            disabled={activePrintCells.size === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-200 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-lg transition-colors cursor-pointer disabled:opacity-40"
+            title="Mark currently printed photos as cut out with scissors, so the next photos automatically fill the remaining empty areas!"
+          >
+            <Scissors className="w-3.5 h-3.5" />
+            <span>Mark Current as Cut</span>
+          </button>
+
+          <button
+            onClick={handleSavePaper}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors cursor-pointer"
+            title="Save this sheet state to your Paper Inventory"
+          >
+            <Save className="w-3.5 h-3.5 text-blue-400" />
+            <span>Save Sheet</span>
+          </button>
+
+          {sheetCuts.size > 0 && (
+            <button
+              onClick={handleResetPaper}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-400 hover:text-slate-200 bg-slate-800/60 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+              title="Reset all cuts and start fresh on a clean sheet of paper"
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+              <span>Reset Sheet</span>
+            </button>
+          )}
+
+          {reusePaper && (
+            <button
+              onClick={handleStopReuse}
+              className="px-2.5 py-1.5 text-xs font-semibold text-slate-400 hover:text-white transition-colors cursor-pointer"
+            >
+              Unlink
+            </button>
+          )}
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Settings Panel */}
@@ -1768,22 +1961,35 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                               }}
                             >
                               {Array.from({ length: combo.count }).map((_, idx) => {
-                                const fillsPhoto = !reusePaper || reuseCutSet.has(`${cIdx}:${idx}`);
+                                const key = `${cIdx}:${idx}`;
+                                const isCut = sheetCuts.has(key);
+                                const isPhoto = activePrintCells.has(key);
                                 return (
                                   <div
                                     key={idx}
-                                    className="relative group transition-all"
+                                    onClick={() => toggleSlotState(key)}
+                                    className="relative group transition-all cursor-pointer select-none"
+                                    title={
+                                      isCut
+                                        ? `✂️ Cut hole #${idx + 1} (Kept blank) — Click to restore`
+                                        : isPhoto
+                                        ? `📸 Printing photo #${idx + 1} — Click to mark as cut`
+                                        : `⬜ Empty spot #${idx + 1} — Click to mark cut`
+                                    }
                                     style={{
                                       width: `${cWidthPx}px`,
                                       height: `${cHeightPx}px`,
-                                      border: fillsPhoto
+                                      border: isPhoto
                                         ? settings.showCutLines
                                           ? `1px ${settings.cutLineStyle} #94A3B8`
                                           : 'none'
+                                        : isCut
+                                        ? '1.5px dashed #EF4444'
                                         : '1px dashed #CBD5E1',
+                                      background: isCut ? '#FEF2F2' : isPhoto ? '#FFFFFF' : '#F8FAFC',
                                     }}
                                   >
-                                    {fillsPhoto ? (
+                                    {isPhoto ? (
                                       <>
                                         <img
                                           src={processedPhoto}
@@ -1794,10 +2000,20 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                                         {settings.showCutLines && (
                                           <Scissors className="w-2.5 h-2.5 text-slate-400 absolute -top-1.5 -left-1.5 opacity-60" />
                                         )}
+                                        <div className="absolute top-1 right-1 bg-black/60 text-white font-mono text-[8px] px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+                                          #{idx + 1}
+                                        </div>
                                       </>
+                                    ) : isCut ? (
+                                      <div className="w-full h-full flex flex-col items-center justify-center p-1 text-center bg-red-50/70">
+                                        <Scissors className="w-3.5 h-3.5 text-red-500 mb-0.5 opacity-80" />
+                                        <span className="text-[8.5px] font-bold text-red-600 tracking-wider">CUT HOLE</span>
+                                        <span className="text-[7.5px] text-slate-400">Blank on print</span>
+                                      </div>
                                     ) : (
-                                      <div className="w-full h-full flex items-center justify-center bg-slate-100">
-                                        <span className="text-[10px] font-bold text-slate-400 tracking-widest">KEPT</span>
+                                      <div className="w-full h-full flex flex-col items-center justify-center p-1 text-center bg-slate-50/50 group-hover:bg-blue-50/50 transition-colors">
+                                        <span className="text-[8.5px] font-medium text-slate-400 group-hover:text-blue-500">Empty</span>
+                                        <span className="text-[7.5px] text-slate-400 font-mono">#{idx + 1}</span>
                                       </div>
                                     )}
                                   </div>
@@ -1810,7 +2026,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                   )}
                 </div>
               ) : (
-                /* Single size grid - strictly locked to Word table columns */
+                /* Single size grid - showing full physical paper layout */
                 <div
                   style={{
                     display: 'grid',
@@ -1819,23 +2035,36 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                     justifyContent: 'start',
                   }}
                 >
-                  {Array.from({ length: settings.quantity }).map((_, idx) => {
-                    const fillsPhoto = !reusePaper || reuseCutSet.has(`0:${idx}`);
+                  {Array.from({ length: fullSheetCapacity }).map((_, idx) => {
+                    const key = `0:${idx}`;
+                    const isCut = sheetCuts.has(key);
+                    const isPhoto = activePrintCells.has(key);
                     return (
                       <div
                         key={idx}
-                        className="relative transition-all"
+                        onClick={() => toggleSlotState(key)}
+                        className="relative group transition-all cursor-pointer select-none"
+                        title={
+                          isCut
+                            ? `✂️ Cut hole #${idx + 1} (Kept blank) — Click to restore`
+                            : isPhoto
+                            ? `📸 Printing photo #${idx + 1} — Click to mark as cut`
+                            : `⬜ Empty available area #${idx + 1} — Click to mark cut`
+                        }
                         style={{
                           width: `${singleItemWidthPx}px`,
                           height: `${singleItemHeightPx}px`,
-                          border: fillsPhoto
+                          border: isPhoto
                             ? settings.showCutLines
                               ? `1px ${settings.cutLineStyle} #94A3B8`
                               : 'none'
+                            : isCut
+                            ? '1.5px dashed #EF4444'
                             : '1px dashed #CBD5E1',
+                          background: isCut ? '#FEF2F2' : isPhoto ? '#FFFFFF' : '#F8FAFC',
                         }}
                       >
-                        {fillsPhoto ? (
+                        {isPhoto ? (
                           <>
                             <img
                               src={processedPhoto}
@@ -1846,10 +2075,20 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                             {settings.showCutLines && (
                               <Scissors className="w-2.5 h-2.5 text-slate-400 absolute -top-1.5 -left-1.5 opacity-60" />
                             )}
+                            <div className="absolute bottom-0 right-0 bg-blue-600/80 text-white font-mono text-[8px] px-1 rounded-tl font-bold opacity-0 group-hover:opacity-100 transition-opacity">
+                              #{idx + 1}
+                            </div>
                           </>
+                        ) : isCut ? (
+                          <div className="w-full h-full flex flex-col items-center justify-center p-1 text-center bg-red-50/70">
+                            <Scissors className="w-3.5 h-3.5 text-red-500 mb-0.5 opacity-80" />
+                            <span className="text-[8.5px] font-bold text-red-600 tracking-wider">CUT HOLE</span>
+                            <span className="text-[7.5px] text-slate-400">Blank on print</span>
+                          </div>
                         ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-slate-100">
-                            <span className="text-[10px] font-bold text-slate-400 tracking-widest">KEPT</span>
+                          <div className="w-full h-full flex flex-col items-center justify-center p-1 text-center bg-slate-50/50 group-hover:bg-blue-50/50 transition-colors">
+                            <span className="text-[8.5px] font-medium text-slate-400 group-hover:text-blue-500">Empty Area</span>
+                            <span className="text-[7.5px] text-slate-400 font-mono">Spot #{idx + 1}</span>
                           </div>
                         )}
                       </div>
@@ -1997,24 +2236,20 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
               </button>
             </div>
 
-            {!isSupabaseConfigured() ? (
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
-                <p className="font-semibold mb-1">Supabase not connected</p>
-                <p className="text-xs text-amber-200/80">
-                  Set <code className="font-mono">VITE_SUPABASE_URL</code> and{' '}
-                  <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> in your environment, then run{' '}
-                  <code className="font-mono">supabase/migrations/001_saved_papers.sql</code> in the Supabase
-                  SQL editor.
-                </p>
+            {!isSupabaseConfigured() && (
+              <div className="rounded-xl border border-slate-700/60 bg-slate-800/40 p-3 text-xs text-slate-300 flex items-center justify-between gap-2">
+                <span>💾 Papers are saved locally in this browser. (Optional: Set Supabase in .env to sync across devices).</span>
               </div>
-            ) : papersLoading ? (
+            )}
+
+            {papersLoading ? (
               <div className="py-10 text-center text-sm text-slate-400">Loading saved papers…</div>
             ) : savedPapers.length === 0 ? (
               <div className="py-10 text-center">
                 <FolderOpen className="w-8 h-8 text-slate-600 mx-auto mb-2" />
                 <p className="text-sm font-semibold text-slate-300">No saved papers yet</p>
                 <p className="text-xs text-slate-500 mt-1">
-                  Lay out a sheet in the studio, then click “Save Paper”.
+                  Click “Save Sheet” on the top bar or tracker to save a physical sheet for reuse.
                 </p>
               </div>
             ) : (
@@ -2022,6 +2257,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                 {savedPapers.map((paper) => {
                   const cutCount = (paper.cut_cells ?? []).length;
                   const total = totalCells(paper);
+                  const freeSpots = Math.max(0, total - cutCount);
                   const isEditing = editingPaperId === paper.id;
                   const isReusing = reusePaperId === paper.id;
                   return (
@@ -2040,23 +2276,23 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                             )}
                           </div>
                           <div className="text-[11px] text-slate-400 mt-0.5">
-                            {cutCount} of {total} slots to fill · {paper.blocks.length} block{paper.blocks.length === 1 ? '' : 's'}
+                            <span className="text-emerald-400 font-semibold">{freeSpots} free spots available</span> · {cutCount} cut/used out of {total} spots
                           </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5">
                           <button
                             onClick={() => handleReusePaper(paper)}
-                            disabled={cutCount === 0}
+                            disabled={freeSpots <= 0}
                             className="px-2.5 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors disabled:opacity-40 cursor-pointer"
-                            title={cutCount === 0 ? 'Mark some cells as cut first' : 'Load this paper and print new photos into the cut slots'}
+                            title={freeSpots <= 0 ? 'All spots on this paper have been used up' : 'Load this paper and print new photos into the empty spaces'}
                           >
-                            Reuse
+                            Reuse Sheet
                           </button>
                           <button
                             onClick={() => (isEditing ? setEditingPaperId(null) : startEditingCuts(paper))}
                             className="px-2.5 py-1 text-[11px] font-semibold text-slate-200 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors cursor-pointer"
                           >
-                            {isEditing ? 'Cancel' : 'Mark cuts'}
+                            {isEditing ? 'Cancel' : 'Edit Cuts'}
                           </button>
                           <button
                             onClick={() => handleRenamePaper(paper)}
@@ -2077,7 +2313,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                       {isEditing && (
                         <div className="mt-3 space-y-3 border-t border-slate-700/60 pt-3">
                           <p className="text-[11px] text-slate-400">
-                            Tap the cells you cut out — on reuse, the current photo prints into those slots. Tap again to undo.
+                            Tap the slots you cut out with scissors. When printing, the printer leaves cut slots completely blank and prints your new photos into the empty spaces!
                           </p>
                           {paper.blocks.map((b) => (
                             <div key={b.block_index}>
@@ -2098,7 +2334,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({ onNotify, initialPrese
                                           ? 'bg-red-500/20 border-red-500/60 text-red-300'
                                           : 'bg-slate-700/40 border-slate-600 text-slate-400 hover:border-slate-400'
                                       }`}
-                                      title={cut ? 'Cut — click to restore' : 'Click to mark as cut'}
+                                      title={cut ? 'Cut hole (kept blank) — click to restore' : 'Empty space — click to mark cut'}
                                     >
                                       {cut ? <X className="w-3 h-3" /> : ci + 1}
                                     </button>

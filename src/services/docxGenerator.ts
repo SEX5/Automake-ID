@@ -88,6 +88,8 @@ export interface DocxGenerateOptions {
   imageBytesMap?: Record<string, Uint8Array | string>;
   /** Cell keys ("<blockIndex>:<cellIndex>") to leave blank — e.g. already-cut cells on a reused paper. */
   skipCells?: string[];
+  /** Specific cell keys that contain the active photo to print. */
+  activeCells?: string[];
   imageResolver?: (widthMm: number, heightMm: number) => Promise<Uint8Array | string> | Uint8Array | string;
   badgeDetails?: {
     name?: string;
@@ -213,6 +215,10 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
   const spacingTwips = convertMillimetersToTwip(spacingMm);
 
   const skipSet = new Set(options.skipCells ?? []);
+  const activeSet =
+    options.activeCells && options.activeCells.length > 0
+      ? new Set(options.activeCells)
+      : null;
 
   // Border style for cut guides
   const cutBorderStyle =
@@ -296,7 +302,7 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
 
     // Number of columns that can physically fit within usable width
     const maxCols = Math.max(1, Math.floor((usableWidthMm + spacingMm) / (itemWidthMm + spacingMm)));
-    const activeCols = Math.min(maxCols, totalCount);
+    const activeCols = maxCols;
     const rowsCount = Math.ceil(totalCount / activeCols);
 
     // Build the exact column widths array for the table grid (alternating photo and spacer columns)
@@ -347,8 +353,9 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
           );
         }
         if (itemIndex < totalCount) {
-          if (skipSet.has(`${blockIdx}:${itemIndex}`)) {
-            // Cut cell on a reused paper — blank filler, no photo, no border
+          const cellKey = `${blockIdx}:${itemIndex}`;
+          if (skipSet.has(cellKey) || (activeSet && !activeSet.has(cellKey))) {
+            // Cut cell or slot not selected for active photo printing — blank filler, no photo, no border
             photoRowCells.push(
               new TableCell({
                 width: { size: itemColWidthTwips, type: WidthType.DXA },
@@ -416,8 +423,26 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
       const item = comboItems[i];
       if (item.count <= 0) continue;
 
+      let blockCount = item.count;
+      if (options.activeCells && options.activeCells.length > 0) {
+        for (const k of options.activeCells) {
+          const [b, c] = k.split(':').map(Number);
+          if (b === blockIdx && !isNaN(c)) {
+            blockCount = Math.max(blockCount, c + 1);
+          }
+        }
+      }
+      if (options.skipCells && options.skipCells.length > 0) {
+        for (const k of options.skipCells) {
+          const [b, c] = k.split(':').map(Number);
+          if (b === blockIdx && !isNaN(c)) {
+            blockCount = Math.max(blockCount, c + 1);
+          }
+        }
+      }
+
       const itemBytes = await getImageBytesForSize(item.widthMm, item.heightMm);
-      const gridTable = createFixedPhotoGridTable(item.widthMm, item.heightMm, item.count, itemBytes, blockIdx);
+      const gridTable = createFixedPhotoGridTable(item.widthMm, item.heightMm, blockCount, itemBytes, blockIdx);
       blockIdx++;
       docChildren.push(gridTable);
 
@@ -433,8 +458,25 @@ export async function generateIdPrintDocx(options: DocxGenerateOptions): Promise
     }
   } else {
     // Standard single size grid table
+    let singleCount = settings.quantity;
+    if (options.activeCells && options.activeCells.length > 0) {
+      for (const k of options.activeCells) {
+        const [b, c] = k.split(':').map(Number);
+        if (b === 0 && !isNaN(c)) {
+          singleCount = Math.max(singleCount, c + 1);
+        }
+      }
+    }
+    if (options.skipCells && options.skipCells.length > 0) {
+      for (const k of options.skipCells) {
+        const [b, c] = k.split(':').map(Number);
+        if (b === 0 && !isNaN(c)) {
+          singleCount = Math.max(singleCount, c + 1);
+        }
+      }
+    }
     const itemBytes = await getImageBytesForSize(widthMm, heightMm);
-    const gridTable = createFixedPhotoGridTable(widthMm, heightMm, settings.quantity, itemBytes, 0);
+    const gridTable = createFixedPhotoGridTable(widthMm, heightMm, singleCount, itemBytes, 0);
     docChildren.push(gridTable);
   }
 
